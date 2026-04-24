@@ -38,6 +38,7 @@ def _ensure_table(cur, base_name: str, dimensions: int) -> None:
         f"""
         CREATE TABLE IF NOT EXISTS {base_name} (
             id SERIAL PRIMARY KEY,
+            passage_id TEXT,
             content TEXT NOT NULL,
             embedding vector({dimensions})
         );
@@ -48,14 +49,14 @@ def _ensure_table(cur, base_name: str, dimensions: int) -> None:
 def embed_and_store(
     base_name: str,
     dimensions: int,
-    chunks: list[str],
+    chunks: list[tuple[str, str]],
 ) -> None:
     """Embeda chunks e persiste no PostgreSQL com pgvector.
 
     Args:
         base_name: Nome da tabela no Postgres.
         dimensions: Dimensões do vetor de embedding.
-        chunks: Textos a embedar e salvar.
+        chunks: Lista de tuplas (passage_id, text) a embedar e salvar.
     """
     if not chunks:
         logger.warning("Lista de chunks vazia; nada a inserir.")
@@ -69,7 +70,8 @@ def embed_and_store(
     )
     start = time.perf_counter()
 
-    embeddings = embed_texts(chunks, dimensions)
+    passage_ids, texts = zip(*chunks)
+    embeddings = embed_texts(list(texts), dimensions)
 
     conn = _get_connection()
     try:
@@ -77,12 +79,12 @@ def embed_and_store(
             _ensure_table(cur, base_name, dimensions)
 
             insert_sql = f"""
-                INSERT INTO {base_name} (content, embedding)
-                VALUES (%s, %s::vector)
+                INSERT INTO {base_name} (passage_id, content, embedding)
+                VALUES (%s, %s, %s::vector)
             """
             data = [
-                (chunk, str(emb))
-                for chunk, emb in zip(chunks, embeddings)
+                (pid, text, str(emb))
+                for pid, text, emb in zip(passage_ids, texts, embeddings)
             ]
             psycopg2.extras.execute_batch(cur, insert_sql, data, page_size=500)
 

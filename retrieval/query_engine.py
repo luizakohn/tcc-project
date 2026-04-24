@@ -15,6 +15,8 @@ METRIC_OPERATORS = {
     "dot_product": "<#>",
 }
 
+APPROX_METRICS = list(METRIC_OPERATORS.keys())
+
 
 def _get_connection():
     return psycopg2.connect(config.POSTGRES_DSN)
@@ -26,15 +28,10 @@ def _run_query(
     query_vec_str: str,
     operator: str,
     k: int,
-    force_seqscan: bool = False,
-) -> tuple[list[int], float]:
-    """Executa uma consulta de similaridade e retorna IDs + tempo em ms."""
-    if force_seqscan:
-        cur.execute("SET enable_indexscan = off;")
-        cur.execute("SET enable_bitmapscan = off;")
-
+) -> tuple[list[str], float]:
+    """Executa uma consulta de similaridade e retorna passage_ids + tempo em ms."""
     sql = f"""
-        SELECT id
+        SELECT passage_id
         FROM {base_name}
         ORDER BY embedding {operator} %s::vector
         LIMIT %s;
@@ -45,11 +42,6 @@ def _run_query(
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     ids = [row[0] for row in cur.fetchall()]
-
-    if force_seqscan:
-        cur.execute("RESET enable_indexscan;")
-        cur.execute("RESET enable_bitmapscan;")
-
     return ids, elapsed_ms
 
 
@@ -58,14 +50,13 @@ def query_single_base(
     base_name: str,
     k: int,
 ) -> dict[str, dict]:
-    """Executa as 4 consultas em uma base e retorna IDs e tempos.
+    """Executa as 3 consultas aproximadas em uma base e retorna passage_ids e tempos.
 
     Returns:
         {
             "cosine": {"ids": [...], "time_ms": float},
             "euclidean": {"ids": [...], "time_ms": float},
             "dot_product": {"ids": [...], "time_ms": float},
-            "sequential": {"ids": [...], "time_ms": float},
         }
     """
     vec_str = str(question_embedding)
@@ -86,18 +77,6 @@ def query_single_base(
                     elapsed,
                     len(ids),
                 )
-
-            clear_cache(cur)
-            ids, elapsed = _run_query(
-                cur, base_name, vec_str, "<=>", k, force_seqscan=True
-            )
-            results["sequential"] = {"ids": ids, "time_ms": elapsed}
-            logger.info(
-                "%s | sequential: %.2fms (%d resultados)",
-                base_name,
-                elapsed,
-                len(ids),
-            )
     finally:
         conn.close()
 
@@ -109,8 +88,8 @@ def query_all_metrics(
     k: int,
     dimensions_list: list[int],
     base_names: list[str],
-) -> dict[str, dict[str, list[int]]]:
-    """Executa queries com múltiplas métricas em múltiplas bases.
+) -> dict[str, dict[str, list[str]]]:
+    """Executa queries com múltiplas métricas aproximadas em múltiplas bases.
 
     Args:
         question: Pergunta de teste.
@@ -121,15 +100,14 @@ def query_all_metrics(
     Returns:
         {
             "768": {
-                "cosine": [id1, id2, ...],
+                "cosine": [passage_id1, ...],
                 "euclidean": [...],
                 "dot_product": [...],
-                "sequential": [...]
             },
             ...
         }
     """
-    all_results: dict[str, dict[str, list[int]]] = {}
+    all_results: dict[str, dict[str, list[str]]] = {}
     timings: dict[str, dict[str, float]] = {}
 
     query_embeddings: dict[int, list[float]] = {}

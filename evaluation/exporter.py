@@ -10,17 +10,6 @@ def export_timings(
     dimensions: int,
     output_dir: str = "results",
 ) -> str:
-    """Exporta tempos de execução para CSV.
-
-    Args:
-        timings_by_question: Lista de dicts com chaves
-            cosine_ms, euclidean_ms, dot_product_ms, sequential_ms.
-        dimensions: Dimensão da base (para nome do arquivo).
-        output_dir: Diretório de saída.
-
-    Returns:
-        Caminho do arquivo gerado.
-    """
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, f"timings_{dimensions}d.csv")
 
@@ -29,7 +18,6 @@ def export_timings(
         "cosine_ms",
         "euclidean_ms",
         "dot_product_ms",
-        "sequential_ms",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -42,7 +30,6 @@ def export_timings(
                     "cosine_ms": f"{row.get('cosine', 0):.3f}",
                     "euclidean_ms": f"{row.get('euclidean', 0):.3f}",
                     "dot_product_ms": f"{row.get('dot_product', 0):.3f}",
-                    "sequential_ms": f"{row.get('sequential', 0):.3f}",
                 }
             )
 
@@ -55,28 +42,17 @@ def export_results(
     dimensions: int,
     output_dir: str = "results",
 ) -> str:
-    """Exporta métricas de avaliação para CSV.
-
-    Args:
-        results_by_question: Lista de dicts com chaves
-            question_id, metric, returned_ids, kendall_tau, overlap_at_k.
-        dimensions: Dimensão da base (para nome do arquivo).
-        output_dir: Diretório de saída.
-
-    Returns:
-        Caminho do arquivo gerado.
-    """
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, f"results_{dimensions}d.csv")
 
     fieldnames = [
         "question_id",
+        "query_id",
         "question",
         "metric",
         "returned_ids",
-        "sequential_ids",
-        "kendall_tau",
-        "overlap_at_k",
+        "precision_at_k",
+        "recall_at_k",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -86,12 +62,12 @@ def export_results(
             writer.writerow(
                 {
                     "question_id": row["question_id"],
+                    "query_id": row["query_id"],
                     "question": row["question"],
                     "metric": row["metric"],
                     "returned_ids": str(row["returned_ids"]),
-                    "sequential_ids": str(row["sequential_ids"]),
-                    "kendall_tau": f"{row['kendall_tau']:.4f}",
-                    "overlap_at_k": f"{row['overlap_at_k']:.4f}",
+                    "precision_at_k": f"{row['precision_at_k']:.4f}",
+                    "recall_at_k": f"{row['recall_at_k']:.4f}",
                 }
             )
 
@@ -103,25 +79,14 @@ def export_summary(
     summary_rows: list[dict],
     output_dir: str = "results",
 ) -> str:
-    """Exporta resumo agregado do experimento.
-
-    Args:
-        summary_rows: Lista de dicts com chaves
-            dimensions, metric, avg_kendall_tau, avg_overlap_at_k,
-            avg_time_ms.
-        output_dir: Diretório de saída.
-
-    Returns:
-        Caminho do arquivo gerado.
-    """
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, "summary.csv")
 
     fieldnames = [
         "dimensions",
         "metric",
-        "avg_kendall_tau",
-        "avg_overlap_at_k",
+        "avg_precision_at_k",
+        "avg_recall_at_k",
         "avg_time_ms",
     ]
 
@@ -133,8 +98,8 @@ def export_summary(
                 {
                     "dimensions": row["dimensions"],
                     "metric": row["metric"],
-                    "avg_kendall_tau": f"{row['avg_kendall_tau']:.4f}",
-                    "avg_overlap_at_k": f"{row['avg_overlap_at_k']:.4f}",
+                    "avg_precision_at_k": f"{row['avg_precision_at_k']:.4f}",
+                    "avg_recall_at_k": f"{row['avg_recall_at_k']:.4f}",
                     "avg_time_ms": f"{row['avg_time_ms']:.3f}",
                 }
             )

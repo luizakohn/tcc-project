@@ -2,21 +2,20 @@
 
 Executa o pipeline completo:
 1. Embeda e armazena chunks nas 3 bases (768d, 1024d, 1536d)
-2. Para cada pergunta de teste, consulta as 4 métricas em cada base
-3. Calcula Kendall's Tau e Overlap@K
+2. Para cada query de teste, consulta as 3 métricas aproximadas em cada base
+3. Calcula Precision@K e Recall@K comparando com os qrels do Quati
 4. Exporta CSVs de timings, resultados e summary
 """
 
 import logging
 import statistics
 import sys
-import random
 
 import config
 from evaluation.exporter import export_results, export_summary, export_timings
-from evaluation.metrics import kendall_tau, overlap_at_k
+from evaluation.metrics import precision_at_k, recall_at_k
 from ingestion.store import embed_and_store
-from quati_loader import load_quati, load_queries
+from quati_loader import load_passages, load_qrels, load_queries
 from retrieval.query_engine import query_all_metrics
 
 logging.basicConfig(
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 APPROX_METRICS = ["cosine", "euclidean", "dot_product"]
 
 
-def run_ingestion(chunks: list[str]) -> None:
+def run_ingestion(chunks: list[tuple[str, str]]) -> None:
     """Fase 1: Ingestão dos chunks nas 3 bases."""
     logger.info("=== FASE 1: INGESTÃO ===")
     for dims in config.DIMENSIONS:
@@ -39,8 +38,18 @@ def run_ingestion(chunks: list[str]) -> None:
     logger.info("Ingestão concluída para todas as bases.")
 
 
-def run_experiment(questions: list[str], k: int = None) -> None:
-    """Fase 2+3: Consulta e avaliação."""
+def run_experiment(
+    queries: list[tuple[str, str]],
+    qrels: dict[str, set[str]],
+    k: int = None,
+) -> None:
+    """Fase 2+3: Consulta e avaliação via qrels.
+
+    Args:
+        queries: Lista de (query_id, query_text).
+        qrels: Mapeamento query_id → set de passage_ids relevantes (score >= 1).
+        k: Top-K (usa config.K se omitido).
+    """
     if k is None:
         k = config.K
 
@@ -53,10 +62,18 @@ def run_experiment(questions: list[str], k: int = None) -> None:
     results_per_dim: dict[int, list[dict]] = {d: [] for d in dimensions_list}
 
     logger.info("=== FASE 2: CONSULTA E AVALIAÇÃO ===")
-    logger.info("Perguntas: %d | K: %d | Bases: %s", len(questions), k, base_names)
+    logger.info("Queries: %d | K: %d | Bases: %s", len(queries), k, base_names)
 
-    for q_idx, question in enumerate(questions):
-        logger.info("Pergunta %d/%d: %s", q_idx + 1, len(questions), question[:80])
+    for q_idx, (query_id, question) in enumerate(queries):
+        relevant_ids = qrels.get(query_id, set())
+        logger.info(
+            "Query %d/%d [%s]: %s (relevantes no qrel: %d)",
+            q_idx + 1,
+            len(queries),
+            query_id,
+            question[:70],
+            len(relevant_ids),
+        )
 
         all_results, all_timings = query_all_metrics(
             question, k, dimensions_list, base_names
@@ -64,34 +81,33 @@ def run_experiment(questions: list[str], k: int = None) -> None:
 
         for dims in dimensions_list:
             dim_key = str(dims)
-            ground_truth = all_results[dim_key]["sequential"]
-
             timings_per_dim[dims].append(all_timings[dim_key])
 
             for metric in APPROX_METRICS:
-                approx_ids = all_results[dim_key][metric]
-                tau = kendall_tau(approx_ids, ground_truth)
-                olap = overlap_at_k(approx_ids, ground_truth, k)
+                returned_ids = all_results[dim_key][metric]
+                prec = precision_at_k(returned_ids, relevant_ids, k)
+                rec = recall_at_k(returned_ids, relevant_ids, k)
 
                 results_per_dim[dims].append(
                     {
                         "question_id": q_idx,
+                        "query_id": query_id,
                         "question": question,
                         "metric": metric,
-                        "returned_ids": approx_ids,
-                        "sequential_ids": ground_truth,
-                        "kendall_tau": tau,
-                        "overlap_at_k": olap,
+                        "returned_ids": returned_ids,
+                        "precision_at_k": prec,
+                        "recall_at_k": rec,
                     }
                 )
 
                 logger.info(
-                    "  [%dd] %s — tau=%.4f, overlap@%d=%.4f",
+                    "  [%dd] %s — P@%d=%.4f, R@%d=%.4f",
                     dims,
                     metric,
-                    tau,
                     k,
-                    olap,
+                    prec,
+                    k,
+                    rec,
                 )
 
     logger.info("=== FASE 3: EXPORTAÇÃO ===")
@@ -111,19 +127,16 @@ def _build_summary(
     results_per_dim: dict[int, list[dict]],
     timings_per_dim: dict[int, list[dict[str, float]]],
 ) -> list[dict]:
-    """Gera linhas de resumo agregado."""
     summary = []
 
     for dims in config.DIMENSIONS:
         for metric in APPROX_METRICS:
-            metric_rows = [
-                r for r in results_per_dim[dims] if r["metric"] == metric
-            ]
+            metric_rows = [r for r in results_per_dim[dims] if r["metric"] == metric]
             if not metric_rows:
                 continue
 
-            avg_tau = statistics.mean(r["kendall_tau"] for r in metric_rows)
-            avg_olap = statistics.mean(r["overlap_at_k"] for r in metric_rows)
+            avg_prec = statistics.mean(r["precision_at_k"] for r in metric_rows)
+            avg_rec = statistics.mean(r["recall_at_k"] for r in metric_rows)
             avg_time = statistics.mean(
                 t.get(metric, 0) for t in timings_per_dim[dims]
             )
@@ -132,8 +145,8 @@ def _build_summary(
                 {
                     "dimensions": dims,
                     "metric": metric,
-                    "avg_kendall_tau": avg_tau,
-                    "avg_overlap_at_k": avg_olap,
+                    "avg_precision_at_k": avg_prec,
+                    "avg_recall_at_k": avg_rec,
                     "avg_time_ms": avg_time,
                 }
             )
@@ -142,26 +155,25 @@ def _build_summary(
 
 
 def _print_summary(summary_rows: list[dict]) -> None:
-    """Imprime o resumo no console."""
-    print("\n" + "=" * 70)
-    print(f"{'Dims':>6} | {'Métrica':<14} | {'Avg τ':>8} | {'Avg O@K':>8} | {'Avg ms':>10}")
-    print("-" * 70)
+    print("\n" + "=" * 76)
+    print(f"{'Dims':>6} | {'Métrica':<14} | {'Avg P@K':>8} | {'Avg R@K':>8} | {'Avg ms':>10}")
+    print("-" * 76)
     for r in summary_rows:
         print(
             f"{r['dimensions']:>6} | {r['metric']:<14} | "
-            f"{r['avg_kendall_tau']:>8.4f} | {r['avg_overlap_at_k']:>8.4f} | "
+            f"{r['avg_precision_at_k']:>8.4f} | {r['avg_recall_at_k']:>8.4f} | "
             f"{r['avg_time_ms']:>10.3f}"
         )
-    print("=" * 70 + "\n")
+    print("=" * 76 + "\n")
 
 
 if __name__ == "__main__":
-    
-    
-    questions = load_queries()
 
     # Fase 1: Ingestão (executar apenas uma vez)
+    # chunks = load_passages()
     # run_ingestion(chunks)
 
     # Fase 2+3: Experimento
-    run_experiment(questions)
+    queries = load_queries()
+    qrels = load_qrels()
+    run_experiment(queries, qrels)
